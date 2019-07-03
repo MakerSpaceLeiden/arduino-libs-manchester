@@ -12,5 +12,5 @@
 	},	
 	"version": "1.0",
 	"frameworks": "arduino",
-	"platforms": ["atmelavr","esp32"]
+	"platforms": ["atmelavr","espressif8266","esp32"]
 }

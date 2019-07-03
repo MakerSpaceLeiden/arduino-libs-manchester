@@ -653,14 +653,18 @@ ISR(TIMER2_COMPA_vect)
          else
 		dShort = (99 * dShort + rx_count) / 100;
          static unsigned long last  =millis();
-	static unsigned long trans = 0; trans++;
+	 static unsigned long trans = 0; trans++;
          if (millis() -last > 5000) {
 		last = millis();
 		float d = (dShort + dLong) / ((MinCount+MaxCount +MinLongCount+MaxLongCount)/2 ) * 100;
 		float da = fabs(d - 100);
-		if (da > 1) 
-		Serial.printf("%d %d - trans %lu -- actual: %f %f Delta %.2f%%\n", (MinCount+MaxCount)/2, (MinLongCount+MaxLongCount)/4, trans, dShort, dLong/2,d);
-		if (da > 1 && da < 20) {
+		if (da > 0.5)
+		Serial.printf("%d %d - sample: %llu uSec - trans %lu -- actual: %f %f Delta %.2f%%\n", 
+			(MinCount+MaxCount)/2, (MinLongCount+MaxLongCount)/4, timeout_us, trans, dShort, dLong/2,d);
+		if (da > 0.5 && da < 20) {
+			// This is a bit ugly - would be better to adjust Min/Max Count -- but there are
+			// curently #defines.
+			//
 	        	timeout_us *= d / 100l;
 			ESP_ERROR_CHECK(esp_timer_stop(esp32_periodic_timer));
    			ESP_ERROR_CHECK(esp_timer_start_periodic(esp32_periodic_timer, timeout_us));
