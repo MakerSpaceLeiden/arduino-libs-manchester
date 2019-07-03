@@ -70,10 +70,12 @@ void Manchester::setupTransmit(uint8_t pin, uint8_t SF)
 {
   setTxPin(pin);
   speedFactor = SF;
+
+#if !defined(ESP32) 
   //we don't use exact calculation of passed time spent outside of transmitter
   //because of high ovehead associated with it, instead we use this 
   //emprirically determined values to compensate for the time loss
-  
+ 
   #if F_CPU == 1000000UL
     uint16_t compensationFactor = 88; //must be divisible by 8 for workaround
   #elif F_CPU == 8000000UL
@@ -81,8 +83,9 @@ void Manchester::setupTransmit(uint8_t pin, uint8_t SF)
   #else //16000000Mhz
     uint16_t compensationFactor = 4; 
   #endif  
+#endif
 
-#if (F_CPU == 80000000UL) || (F_CPU == 160000000)   // ESP8266 80MHz or 160 MHz
+#if (F_CPU == 80000000UL) || (F_CPU == 160000000) || defined(ESP32)   // ESP8266 80MHz or 160 MHz or ESP32
   delay1 = delay2 = (HALF_BIT_INTERVAL >> speedFactor) - 2;
 #else
   delay1 = (HALF_BIT_INTERVAL >> speedFactor) - compensationFactor;
@@ -269,6 +272,12 @@ void Manchester::stopReceive(void)
    void timer0_ISR (void);
 #endif
 
+#if defined ( ESP32 )
+   void timer0_ISR (void * arg);
+   esp_timer_handle_t esp32_periodic_timer;
+   uint64_t timeout_us = 600;
+#endif
+
 void MANRX_SetupReceive(uint8_t speedFactor)
 {
   pinMode(RxPin, INPUT);
@@ -286,8 +295,18 @@ void MANRX_SetupReceive(uint8_t speedFactor)
    timer0_attachInterrupt(timer0_ISR);
    timer0_write(ESP.getCycleCount() + ESPtimer); //80Mhz -> 128us
    interrupts();
-  #elif defined( __AVR_ATtiny25__ ) || defined( __AVR_ATtiny45__ ) || defined( __AVR_ATtiny85__ )
+  #elif defined( ESP32 )
+   esp_timer_create_args_t esp32_periodic_timer_args;
+   esp32_periodic_timer_args.callback = &timer0_ISR;
+   // esp32_periodic_timer_args.args= self;
+   esp32_periodic_timer_args.name = "manchester-read";
+   
+   ESP_ERROR_CHECK(esp_timer_create(&esp32_periodic_timer_args, &esp32_periodic_timer));
+   timeout_us >>= speedFactor;
+   ESP_ERROR_CHECK(esp_timer_start_periodic(esp32_periodic_timer, timeout_us )); // 300 uSec for MAN_300, etc..
+   Serial.println("Timer started,");
 
+  #elif defined( __AVR_ATtiny25__ ) || defined( __AVR_ATtiny45__ ) || defined( __AVR_ATtiny85__ )
     /*
     Timer 1 is used with a ATtiny85. 
     http://www.atmel.com/Images/Atmel-2586-AVR-8-bit-Microcontroller-ATtiny25-ATtiny45-ATtiny85_Datasheet.pdf page 88
@@ -521,6 +540,8 @@ void AddManBit(uint16_t *manBits, uint8_t *numMB,
 
 #if defined( ESP8266 )
 void ICACHE_RAM_ATTR timer0_ISR (void)
+#elif defined( ESP32 )
+void ICACHE_RAM_ATTR timer0_ISR (void *ar)
 #elif defined( __AVR_ATtiny25__ ) || defined( __AVR_ATtiny45__ ) || defined( __AVR_ATtiny85__ )
 ISR(TIMER1_COMPA_vect)
 #elif defined( __AVR_ATtiny2313__ ) || defined( __AVR_ATtiny2313A__ ) || defined( __AVR_ATtiny4313__ )
@@ -623,6 +644,30 @@ ISR(TIMER2_COMPA_vect)
         }
         else
         {
+#if 1
+	// experimental auto tune.
+         static float dShort = (MinCount+MaxCount) / 2;
+         static float dLong = (MinLongCount+MaxLongCount) / 2;
+         if (rx_count >= MinLongCount) 
+		dLong = (99 * dLong + rx_count) / 100;
+         else
+		dShort = (99 * dShort + rx_count) / 100;
+         static unsigned long last  =millis();
+	static unsigned long trans = 0; trans++;
+         if (millis() -last > 5000) {
+		last = millis();
+		float d = (dShort + dLong) / ((MinCount+MaxCount +MinLongCount+MaxLongCount)/2 ) * 100;
+		float da = fabs(d - 100);
+		if (da > 1) 
+		Serial.printf("%d %d - trans %lu -- actual: %f %f Delta %.2f%%\n", (MinCount+MaxCount)/2, (MinLongCount+MaxLongCount)/4, trans, dShort, dLong/2,d);
+		if (da > 1 && da < 20) {
+	        	timeout_us *= d / 100l;
+			ESP_ERROR_CHECK(esp_timer_stop(esp32_periodic_timer));
+   			ESP_ERROR_CHECK(esp_timer_start_periodic(esp32_periodic_timer, timeout_us));
+		        Serial.printf("Timer refine: %llu\n", timeout_us);
+		};
+	};
+#endif
           if(rx_count >= MinLongCount) // was the previous bit a double bit?
           {
             AddManBit(&rx_manBits, &rx_numMB, &rx_curByte, rx_data, rx_last_sample);
